@@ -16,6 +16,7 @@ import pandas as pd
 import torch
 import time
 import atexit
+import gc
 import httpx
 import psutil
 import openai
