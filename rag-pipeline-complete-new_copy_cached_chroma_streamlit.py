@@ -1459,6 +1459,9 @@ class OptimizedGPTEmbeddingModel:
         self.batch_size = min(batch_size, 100)  # OpenAI limit
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+
+        # Add logger initialization
+        self.logger = logging.getLogger(__name__)        
         
         # Initialize embedding cache
         self.cache_dir = Path(cache_dir)
