@@ -102,123 +102,95 @@ def clean_text(text: str) -> str:
 
 
 class OptimizedCache:
-    """Memory-efficient caching system with disk persistence"""
+    """Memory-efficient cache implementation"""
     
     def __init__(
         self,
-        cache_dir: str,
+        cache_dir: str = "cache",
         max_memory_items: int = 1000,
-        flush_threshold: int = 100
+        ttl_days: int = 30
     ):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.index_file = self.cache_dir / "cache_index.json"
         self.max_memory_items = max_memory_items
-        self.flush_threshold = flush_threshold
+        self.ttl = timedelta(days=ttl_days)
+        self._lock = threading.Lock()
+        self._index = {}  # Initialize empty index
+        self._load_index()
         
-        self._memory_cache = {}
-        self._modified = False
-        self._access_count = 0
-        
-        # Setup disk cache
-        self.disk_cache_file = self.cache_dir / "cache.pkl"
-        self.index_file = self.cache_dir / "index.json"
-        self._load_cache()
-        
-        # Register cleanup
-        atexit.register(self.cleanup)
-
-    def _load_cache(self):
-        """Load cache from disk"""
+    def _load_index(self):
+        """Load cache index from disk"""
         try:
-            if self.disk_cache_file.exists() and self.index_file.exists():
+            if self.index_file.exists():
                 with open(self.index_file, 'r') as f:
                     self._index = json.load(f)
-                # Don't load full cache into memory
+            else:
+                self._index = {}
         except Exception as e:
-            logger.warning(f"Cache loading failed: {str(e)}")
+            logger.warning(f"Error loading cache index: {str(e)}")
             self._index = {}
-
-    def _save_cache(self):
-        """Save cache to disk"""
-        if not self._modified:
-            return
             
+    def _save_index(self):
+        """Save cache index to disk"""
         try:
-            temp_file = self.disk_cache_file.with_suffix('.tmp')
-            with open(temp_file, 'wb') as f:
-                pickle.dump(self._memory_cache, f)
-                
-            # Atomic replacement
-            temp_file.replace(self.disk_cache_file)
-            
             with open(self.index_file, 'w') as f:
                 json.dump(self._index, f)
-                
-            self._modified = False
-            
         except Exception as e:
-            logger.error(f"Cache saving failed: {str(e)}")
-
-    def get(self, key: str) -> Optional[Any]:
+            logger.warning(f"Error saving cache index: {str(e)}")
+            
+    def get(self, key: str) -> Any:
         """Get item from cache"""
-        # Check memory cache first
-        if key in self._memory_cache:
-            self._access_count += 1
-            return self._memory_cache[key]
-        
-        # Check disk cache if in index
-        if key in self._index:
-            try:
-                with open(self.disk_cache_file, 'rb') as f:
-                    disk_cache = pickle.load(f)
-                    if key in disk_cache:
-                        value = disk_cache[key]
-                        # Add to memory cache
-                        self._add_to_memory_cache(key, value)
-                        return value
-            except Exception:
-                pass
+        if key not in self._index:
+            return None
+            
+        try:
+            cache_path = self.cache_dir / f"{key}.pkl"
+            if not cache_path.exists():
+                return None
                 
-        return None
-
-    def _add_to_memory_cache(self, key: str, value: Any):
-        """Add item to memory cache with size management"""
-        if len(self._memory_cache) >= self.max_memory_items:
-            # Remove oldest items
-            items = sorted(
-                self._memory_cache.items(),
-                key=lambda x: x[1].get('access_time', 0)
-            )
-            self._memory_cache = dict(items[-self.max_memory_items:])
-        
-        self._memory_cache[key] = {
-            'value': value,
-            'access_time': time.time()
-        }
-
+            with open(cache_path, 'rb') as f:
+                return pickle.load(f)
+        except Exception:
+            return None
+            
     def set(self, key: str, value: Any):
-        """Set cache item"""
-        self._add_to_memory_cache(key, value)
-        self._index[key] = True
-        self._modified = True
-        self._access_count += 1
-        
-        # Check if should flush
-        if self._access_count >= self.flush_threshold:
-            self.flush()
-
-    def flush(self):
-        """Flush cache to disk"""
-        self._save_cache()
-        self._access_count = 0
-
+        """Set item in cache"""
+        try:
+            cache_path = self.cache_dir / f"{key}.pkl"
+            
+            with open(cache_path, 'wb') as f:
+                pickle.dump(value, f)
+                
+            self._index[key] = {
+                'created_at': datetime.now().isoformat(),
+                'path': str(cache_path)
+            }
+            
+            self._save_index()
+        except Exception as e:
+            logger.warning(f"Error setting cache item: {str(e)}")
+            
     def cleanup(self):
-        """Cleanup resources"""
-        if self._modified:
-            self._save_cache()
-        self._memory_cache.clear()
-
-
+        """Remove expired items from cache"""
+        try:
+            current_time = datetime.now()
+            expired = []
+            
+            for key, info in self._index.items():
+                created_at = datetime.fromisoformat(info['created_at'])
+                if current_time - created_at > self.ttl:
+                    expired.append(key)
+                    
+            for key in expired:
+                cache_path = Path(self._index[key]['path'])
+                if cache_path.exists():
+                    cache_path.unlink()
+                del self._index[key]
+                
+            self._save_index()
+        except Exception as e:
+            logger.warning(f"Error during cache cleanup: {str(e)}")
 
 class Repacker:
     """Handles repacking of ranked results into a coherent context"""
