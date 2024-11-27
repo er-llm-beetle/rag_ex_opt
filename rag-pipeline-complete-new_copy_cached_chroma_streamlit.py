@@ -36,7 +36,7 @@ from multiprocessing import current_process
 import torch.multiprocessing as torch_mp
 import subprocess
 
-
+from contextlib import contextmanager
 
 # Document processing
 import PyPDF2
